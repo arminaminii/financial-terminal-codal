@@ -177,12 +177,13 @@ def proxy_test(request):
 
 @csrf_exempt
 def debug_crawl(request):
-    """Debug endpoint: shows raw XML response from codal.ir"""
+    """Debug endpoint: shows raw XML response from codal.ir using session"""
     symbol = request.GET.get("symbol", "فولاد").strip()
-    from crawler.services import codal_api_url, _http_get
+    from crawler.services import codal_api_url, _http_get_session, _refresh_codal_session
     url = codal_api_url(symbol, page=1, length=10)
-    r = _http_get(url, timeout=20)
-    return JsonResponse({
+    debug_info = []
+    r = _http_get_session(url, timeout=20, debug_info=debug_info)
+    result = {
         "url": url,
         "status": r["status"],
         "latency_ms": r["latency_ms"],
@@ -190,4 +191,19 @@ def debug_crawl(request):
         "body_preview": r["text"][:2000],
         "error": r["error"],
         "has_letter": "<Letter" in r["text"] if r["text"] else False,
-    })
+        "session_debug": debug_info,
+    }
+    if not r["ok"] and ("Connection" in (r["error"] or "") or "10054" in (r["error"] or "")):
+        debug_info2 = []
+        _refresh_codal_session(debug_info2)
+        r2 = _http_get_session(url, timeout=20, debug_info=debug_info2)
+        result["retry"] = {
+            "status": r2["status"],
+            "latency_ms": r2["latency_ms"],
+            "body_length": len(r2["text"]),
+            "body_preview": r2["text"][:2000],
+            "error": r2["error"],
+            "has_letter": "<Letter" in r2["text"] if r2["text"] else False,
+            "session_debug": debug_info2,
+        }
+    return JsonResponse(result)

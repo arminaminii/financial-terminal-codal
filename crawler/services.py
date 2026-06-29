@@ -1,6 +1,7 @@
 import re
 import json
 import time
+import threading
 from typing import List, Optional, Dict
 from urllib.parse import quote
 import requests
@@ -40,7 +41,6 @@ def parse_codal_xml(xml_text: str) -> List[dict]:
 
 def extract_total_count(xml_text: str) -> int:
     """Extract total search results count from Codal XML."""
-    # Try different possible tags for total count
     for tag in ["TotalCount", "Total", "Count", "totalcount"]:
         m = re.search(rf"<{tag}>([\s\S]*?)</{tag}>", xml_text, re.IGNORECASE)
         if m:
@@ -90,7 +90,7 @@ def classify_report(title: str) -> dict:
 
 # ── Codal API URL Builder ──
 
-PER_PAGE = 100  # max items per page
+PER_PAGE = 100
 
 
 def codal_api_url(symbol: str, page: int = 1, length: int = PER_PAGE) -> str:
@@ -106,22 +106,91 @@ def codal_api_url(symbol: str, page: int = 1, length: int = PER_PAGE) -> str:
     )
 
 
-# ── HTTP Fetcher ─
+# ── Session Manager (with cookies from codal.ir) ──
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-    "Accept": "application/xml, text/xml, */*",
-    "Accept-Language": "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Accept-Encoding": "gzip, deflate",
-    "Connection": "keep-alive",
-}
+_session_cache = {}  # thread-safe session cache
+_session_lock = threading.Lock()
 
 
-def _http_get(url: str, timeout: int = 20) -> Dict:
-    """Single HTTP GET with full error info. Returns {ok, status, text, error, latency_ms}."""
-    t0 = time.time()
+def _get_codal_session(debug_info: list = None) -> requests.Session:
+    """
+    Get a requests.Session with valid cookies from codal.ir.
+    First visits the main page to get ASP.NET session cookies,
+    then the session is reused for API calls.
+    """
+    with _session_lock:
+        session = _session_cache.get("main")
+        if session is not None:
+            return session
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    })
+
+    # Step 1: Visit main page to get cookies
     try:
-        resp = requests.get(url, timeout=timeout, headers=HEADERS, verify=True)
+        if debug_info is not None:
+            debug_info.append(".getSession → Visiting codal.ir for cookies...")
+        resp = session.get("https://codal.ir", timeout=15, verify=True, allow_redirects=True)
+        if debug_info is not None:
+            debug_info.append(f"  codal.ir → HTTP {resp.status_code} | cookies: {dict(session.cookies)}")
+    except Exception as e:
+        if debug_info is not None:
+            debug_info.append(f"  codal.ir visit failed: {str(e)[:100]}")
+
+    # Step 2: Visit search page to get search-specific cookies
+    try:
+        if debug_info is not None:
+            debug_info.append("getSession → Visiting search page...")
+        resp2 = session.get("https://search.codal.ir", timeout=15, verify=True, allow_redirects=True)
+        if debug_info is not None:
+            debug_info.append(f"  search.codal.ir → HTTP {resp2.status_code} | cookies: {dict(session.cookies)}")
+    except Exception as e:
+        if debug_info is not None:
+            debug_info.append(f"  search.codal.ir visit failed: {str(e)[:100]}")
+
+    # Cache the session for reuse (5 minutes TTL via lazy refresh)
+    with _session_lock:
+        _session_cache["main"] = session
+
+    return session
+
+
+def _refresh_codal_session(debug_info: list = None):
+    """Force refresh the codal session."""
+    with _session_lock:
+        old = _session_cache.pop("main", None)
+        if old:
+            try:
+                old.close()
+            except Exception:
+                pass
+    return _get_codal_session(debug_info)
+
+
+# ── HTTP Fetcher (session-based) ──
+
+def _http_get_session(url: str, timeout: int = 20, debug_info: list = None) -> Dict:
+    """HTTP GET using a session with codal.ir cookies."""
+    t0 = time.time()
+    session = _get_codal_session(debug_info)
+    api_headers = {
+        "Accept": "application/xml, text/xml, */*",
+        "Referer": "https://search.codal.ir/",
+        "Origin": "https://search.codal.ir",
+        "X-Requested-With": "XMLHttpRequest",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+    }
+    try:
+        resp = session.get(url, timeout=timeout, headers=api_headers, verify=True)
         latency = int((time.time() - t0) * 1000)
         return {
             "ok": True,
@@ -139,6 +208,28 @@ def _http_get(url: str, timeout: int = 20) -> Dict:
         return {"ok": False, "status": 0, "text": "", "latency_ms": latency, "error": f"Timeout ({timeout}s)"}
     except requests.exceptions.ConnectionError as e:
         latency = int((time.time() - t0) * 1000)
+        err_str = str(e)
+        return {"ok": False, "status": 0, "text": "", "latency_ms": latency,
+                "error": f"Connection Error: {err_str[:200]}"}
+    except Exception as e:
+        latency = int((time.time() - t0) * 1000)
+        return {"ok": False, "status": 0, "text": "", "latency_ms": latency, "error": f"Error: {str(e)[:200]}"}
+
+
+def _http_get_simple(url: str, timeout: int = 20) -> Dict:
+    """Simple HTTP GET without session (for proxy or debug)."""
+    t0 = time.time()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Accept": "application/xml, text/xml, */*",
+        "Referer": "https://search.codal.ir/",
+    }
+    try:
+        resp = requests.get(url, timeout=timeout, headers=headers, verify=True)
+        latency = int((time.time() - t0) * 1000)
+        return {"ok": True, "status": resp.status_code, "text": resp.text, "latency_ms": latency, "error": None}
+    except requests.exceptions.ConnectionError as e:
+        latency = int((time.time() - t0) * 1000)
         return {"ok": False, "status": 0, "text": "", "latency_ms": latency, "error": f"Connection Error: {str(e)[:200]}"}
     except Exception as e:
         latency = int((time.time() - t0) * 1000)
@@ -153,8 +244,8 @@ def normalize(s: str) -> str:
 
 def fetch_all_pages(symbol: str, timeout: int = 20) -> Dict:
     """
-    Fetch ALL pages from Codal for a symbol.
-    Returns {letters, total_available, pages_fetched, method, debug}.
+    Fetch ALL pages from Codal for a symbol using session cookies.
+    Returns {letters, total_available, method, debug}.
     """
     all_letters = []
     debug_info = []
@@ -162,15 +253,27 @@ def fetch_all_pages(symbol: str, timeout: int = 20) -> Dict:
 
     def try_direct():
         nonlocal all_letters, method
-        # Page 1
         url1 = codal_api_url(symbol, page=1, length=PER_PAGE)
-        debug_info.append(f"→ Page 1: {url1[:80]}...")
-        r1 = _http_get(url1, timeout)
+        debug_info.append(f"→ [Direct] Page 1 fetch...")
+        r1 = _http_get_session(url1, timeout, debug_info)
         debug_info.append(f"  HTTP {r1['status']} | {r1['latency_ms']}ms | {len(r1['text'])} chars")
 
         if not r1["ok"] or r1["status"] != 200:
             debug_info.append(f"  ✗ {r1['error'] or 'HTTP ' + str(r1['status'])}")
-            return False
+
+            # If connection reset → try refreshing session once
+            if "Connection" in (r1['error'] or "") or "10054" in (r1['error'] or ""):
+                debug_info.append("  → Connection reset! Refreshing session cookies...")
+                _refresh_codal_session(debug_info)
+                r1_retry = _http_get_session(url1, timeout, debug_info)
+                debug_info.append(f"  Retry → HTTP {r1_retry['status']} | {r1_retry['latency_ms']}ms | {len(r1_retry['text'])} chars")
+                if r1_retry["ok"] and r1_retry["status"] == 200 and len(r1_retry["text"]) > 20:
+                    r1 = r1_retry
+                else:
+                    debug_info.append(f"  ✗ Retry also failed: {r1_retry.get('error', 'unknown')}")
+                    return False
+            else:
+                return False
 
         if len(r1["text"]) < 20:
             debug_info.append("  ✗ Response too short")
@@ -182,31 +285,30 @@ def fetch_all_pages(symbol: str, timeout: int = 20) -> Dict:
 
         if not letters1:
             debug_info.append("  ✗ No <Letter> blocks found in XML")
-            # Show first 300 chars of response for debugging
-            debug_info.append(f"  Response preview: {r1['text'][:300]}")
+            debug_info.append(f"  Response preview: {r1['text'][:500]}")
             return False
 
         all_letters.extend(letters1)
 
-        # If total_count > PER_PAGE, fetch remaining pages
+        # Multi-page
         if total_count > PER_PAGE:
             total_pages = (total_count + PER_PAGE - 1) // PER_PAGE
-            debug_info.append(f"  Total={total_count} > {PER_PAGE}, need {total_pages} pages")
+            debug_info.append(f"  Total={total_count} > {PER_PAGE}, fetching {total_pages} pages total")
             for page in range(2, total_pages + 1):
                 url = codal_api_url(symbol, page=page, length=PER_PAGE)
-                r = _http_get(url, timeout)
+                r = _http_get_session(url, timeout, debug_info)
                 debug_info.append(f"→ Page {page}: HTTP {r['status']} | {r['latency_ms']}ms | {len(r['text'])} chars")
                 if r["ok"] and r["status"] == 200:
                     page_letters = parse_codal_xml(r["text"])
                     all_letters.extend(page_letters)
-                    debug_info.append(f"  +{len(page_letters)} letters (total so far: {len(all_letters)})")
+                    debug_info.append(f"  +{len(page_letters)} letters (total: {len(all_letters)})")
                     if len(page_letters) == 0:
                         debug_info.append("  Empty page, stopping")
                         break
                 else:
-                    debug_info.append(f"  ✗ Failed: {r['error'] or 'HTTP ' + str(r['status'])}")
+                    debug_info.append(f"  ✗ {r['error'] or 'HTTP ' + str(r['status'])}")
                     break
-                time.sleep(0.3)  # small delay between pages
+                time.sleep(0.5)
 
         method = "direct"
         return True
@@ -219,11 +321,11 @@ def fetch_all_pages(symbol: str, timeout: int = 20) -> Dict:
             return False
 
         proxy_base = proxy_config.proxy_url.rstrip("/")
-        debug_info.append(f"Trying proxy: {proxy_base[:50]}...")
+        debug_info.append(f"Trying proxy: {proxy_base[:60]}...")
 
         url1 = codal_api_url(symbol, page=1, length=PER_PAGE)
         fetch_url = f"{proxy_base}?url={quote(url1)}"
-        r1 = _http_get(fetch_url, timeout * 2)
+        r1 = _http_get_simple(fetch_url, timeout * 2)
         debug_info.append(f"  Proxy HTTP {r1['status']} | {r1['latency_ms']}ms | {len(r1['text'])} chars")
 
         if not r1["ok"] or r1["status"] != 200 or len(r1["text"]) < 20:
@@ -245,7 +347,7 @@ def fetch_all_pages(symbol: str, timeout: int = 20) -> Dict:
             for page in range(2, total_pages + 1):
                 url = codal_api_url(symbol, page=page, length=PER_PAGE)
                 fetch_url = f"{proxy_base}?url={quote(url)}"
-                r = _http_get(fetch_url, timeout * 2)
+                r = _http_get_simple(fetch_url, timeout * 2)
                 debug_info.append(f"→ Proxy Page {page}: HTTP {r['status']} | {r['latency_ms']}ms")
                 if r["ok"] and r["status"] == 200:
                     page_letters = parse_codal_xml(r["text"])
@@ -255,12 +357,11 @@ def fetch_all_pages(symbol: str, timeout: int = 20) -> Dict:
                         break
                 else:
                     break
-                time.sleep(0.3)
+                time.sleep(0.5)
 
         method = "proxy"
         return True
 
-    # Try direct first, then proxy
     if try_direct():
         pass
     elif try_proxy():
@@ -327,7 +428,6 @@ def _filter_and_build(letters: List[dict], symbol: str) -> List[dict]:
             "is_consolidated": cls["is_consolidated"],
         })
 
-    # Sort: audited first, then by date desc
     reports.sort(key=lambda r: (not r["is_audited"], r["date"] or ""))
     return reports
 
