@@ -1,10 +1,10 @@
 import re
 import json
 import time
+import subprocess
 import threading
 from typing import List, Optional, Dict
 from urllib.parse import quote
-import requests
 from crawler.models import CodalCache, ProxyConfig
 
 
@@ -40,7 +40,6 @@ def parse_codal_xml(xml_text: str) -> List[dict]:
 
 
 def extract_total_count(xml_text: str) -> int:
-    """Extract total search results count from Codal XML."""
     for tag in ["TotalCount", "Total", "Count", "totalcount"]:
         m = re.search(rf"<{tag}>([\s\S]*?)</{tag}>", xml_text, re.IGNORECASE)
         if m:
@@ -106,134 +105,109 @@ def codal_api_url(symbol: str, page: int = 1, length: int = PER_PAGE) -> str:
     )
 
 
-# ── Session Manager (with cookies from codal.ir) ──
+# ── HTTP Fetcher using curl (bypasses TLS fingerprint blocking) ──
 
-_session_cache = {}  # thread-safe session cache
-_session_lock = threading.Lock()
-
-
-def _get_codal_session(debug_info: list = None) -> requests.Session:
+def _curl_get(url: str, timeout: int = 20) -> Dict:
     """
-    Get a requests.Session with valid cookies from codal.ir.
-    First visits the main page to get ASP.NET session cookies,
-    then the session is reused for API calls.
+    Fetch URL using system curl command.
+    This bypasses Python requests' TLS fingerprint that gets blocked by Iranian sites.
+    curl has a real browser-like TLS fingerprint.
     """
-    with _session_lock:
-        session = _session_cache.get("main")
-        if session is not None:
-            return session
-
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-    })
-
-    # Step 1: Visit main page to get cookies
-    try:
-        if debug_info is not None:
-            debug_info.append(".getSession → Visiting codal.ir for cookies...")
-        resp = session.get("https://codal.ir", timeout=15, verify=True, allow_redirects=True)
-        if debug_info is not None:
-            debug_info.append(f"  codal.ir → HTTP {resp.status_code} | cookies: {dict(session.cookies)}")
-    except Exception as e:
-        if debug_info is not None:
-            debug_info.append(f"  codal.ir visit failed: {str(e)[:100]}")
-
-    # Step 2: Visit search page to get search-specific cookies
-    try:
-        if debug_info is not None:
-            debug_info.append("getSession → Visiting search page...")
-        resp2 = session.get("https://search.codal.ir", timeout=15, verify=True, allow_redirects=True)
-        if debug_info is not None:
-            debug_info.append(f"  search.codal.ir → HTTP {resp2.status_code} | cookies: {dict(session.cookies)}")
-    except Exception as e:
-        if debug_info is not None:
-            debug_info.append(f"  search.codal.ir visit failed: {str(e)[:100]}")
-
-    # Cache the session for reuse (5 minutes TTL via lazy refresh)
-    with _session_lock:
-        _session_cache["main"] = session
-
-    return session
-
-
-def _refresh_codal_session(debug_info: list = None):
-    """Force refresh the codal session."""
-    with _session_lock:
-        old = _session_cache.pop("main", None)
-        if old:
-            try:
-                old.close()
-            except Exception:
-                pass
-    return _get_codal_session(debug_info)
-
-
-# ── HTTP Fetcher (session-based) ──
-
-def _http_get_session(url: str, timeout: int = 20, debug_info: list = None) -> Dict:
-    """HTTP GET using a session with codal.ir cookies."""
     t0 = time.time()
-    session = _get_codal_session(debug_info)
-    api_headers = {
-        "Accept": "application/xml, text/xml, */*",
-        "Referer": "https://search.codal.ir/",
-        "Origin": "https://search.codal.ir",
-        "X-Requested-With": "XMLHttpRequest",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-origin",
-    }
     try:
-        resp = session.get(url, timeout=timeout, headers=api_headers, verify=True)
+        # Build curl command with browser-like headers
+        result = subprocess.run(
+            [
+                "curl", "-s", "-S",
+                "--max-time", str(timeout),
+                "--connect-timeout", "10",
+                "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+                "-H", "Accept: application/xml, text/xml, */*",
+                "-H", "Accept-Language: fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7",
+                "-H", "Referer: https://search.codal.ir/",
+                "-H", "Origin: https://search.codal.ir",
+                "-H", "X-Requested-With: XMLHttpRequest",
+                "-H", "Connection: keep-alive",
+                url
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout + 5,
+        )
         latency = int((time.time() - t0) * 1000)
+        text = result.stdout
+
+        if result.returncode != 0:
+            err = result.stderr.strip()
+            # curl exit code 56 = recv failure, 35 = SSL connect error, 28 = timeout
+            if result.returncode == 56:
+                return {"ok": False, "status": 0, "text": "", "latency_ms": latency, "error": f"curl: Connection reset (code 56): {err[:150]}"}
+            elif result.returncode == 35:
+                return {"ok": False, "status": 0, "text": "", "latency_ms": latency, "error": f"curl: SSL error (code 35): {err[:150]}"}
+            elif result.returncode == 28:
+                return {"ok": False, "status": 0, "text": "", "latency_ms": latency, "error": f"curl: Timeout"}
+            elif result.returncode == 6:
+                return {"ok": False, "status": 0, "text": "", "latency_ms": latency, "error": f"curl: DNS resolve failed"}
+            else:
+                return {"ok": False, "status": 0, "text": "", "latency_ms": latency, "error": f"curl error ({result.returncode}): {err[:150]}"}
+
+        # Try to get HTTP status from curl
+        # If we got text, consider it ok
         return {
             "ok": True,
-            "status": resp.status_code,
-            "text": resp.text,
-            "headers": dict(resp.headers),
+            "status": 200,
+            "text": text,
             "latency_ms": latency,
             "error": None,
         }
-    except requests.exceptions.SSLError as e:
+    except subprocess.TimeoutExpired:
         latency = int((time.time() - t0) * 1000)
-        return {"ok": False, "status": 0, "text": "", "latency_ms": latency, "error": f"SSL Error: {str(e)[:200]}"}
-    except requests.exceptions.Timeout as e:
+        return {"ok": False, "status": 0, "text": "", "latency_ms": latency, "error": "curl: Process timeout"}
+    except FileNotFoundError:
         latency = int((time.time() - t0) * 1000)
-        return {"ok": False, "status": 0, "text": "", "latency_ms": latency, "error": f"Timeout ({timeout}s)"}
-    except requests.exceptions.ConnectionError as e:
-        latency = int((time.time() - t0) * 1000)
-        err_str = str(e)
-        return {"ok": False, "status": 0, "text": "", "latency_ms": latency,
-                "error": f"Connection Error: {err_str[:200]}"}
+        return {"ok": False, "status": 0, "text": "", "latency_ms": latency, "error": "curl not found! Install curl or use Windows 10+"}
     except Exception as e:
         latency = int((time.time() - t0) * 1000)
         return {"ok": False, "status": 0, "text": "", "latency_ms": latency, "error": f"Error: {str(e)[:200]}"}
 
 
-def _http_get_simple(url: str, timeout: int = 20) -> Dict:
-    """Simple HTTP GET without session (for proxy or debug)."""
+def _requests_get_fallback(url: str, timeout: int = 20) -> Dict:
+    """Fallback using Python requests (in case curl not available)."""
+    import requests
     t0 = time.time()
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-        "Accept": "application/xml, text/xml, */*",
-        "Referer": "https://search.codal.ir/",
-    }
     try:
-        resp = requests.get(url, timeout=timeout, headers=headers, verify=True)
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            "Accept": "application/xml, text/xml, */*",
+            "Accept-Language": "fa-IR,fa;q=0.9",
+            "Referer": "https://search.codal.ir/",
+            "Origin": "https://search.codal.ir",
+        })
+        resp = session.get(url, timeout=timeout, verify=False)
         latency = int((time.time() - t0) * 1000)
-        return {"ok": True, "status": resp.status_code, "text": resp.text, "latency_ms": latency, "error": None}
-    except requests.exceptions.ConnectionError as e:
-        latency = int((time.time() - t0) * 1000)
-        return {"ok": False, "status": 0, "text": "", "latency_ms": latency, "error": f"Connection Error: {str(e)[:200]}"}
+        return {"ok": resp.status_code == 200, "status": resp.status_code, "text": resp.text, "latency_ms": latency, "error": None if resp.status_code == 200 else f"HTTP {resp.status_code}"}
     except Exception as e:
         latency = int((time.time() - t0) * 1000)
-        return {"ok": False, "status": 0, "text": "", "latency_ms": latency, "error": f"Error: {str(e)[:200]}"}
+        return {"ok": False, "status": 0, "text": "", "latency_ms": latency, "error": str(e)[:200]}
+
+
+def _http_get(url: str, timeout: int = 20, debug_info: list = None) -> Dict:
+    """Try curl first, fallback to requests."""
+    if debug_info is not None:
+        debug_info.append(f"_http_get → trying curl...")
+    r = _curl_get(url, timeout)
+    if r["ok"] and len(r["text"]) > 20:
+        if debug_info is not None:
+            debug_info.append(f"  curl OK: {r['latency_ms']}ms | {len(r['text'])} chars")
+        return r
+    if debug_info is not None:
+        debug_info.append(f"  curl failed: {r.get('error', 'unknown')}")
+        debug_info.append(f"_http_get → falling back to requests...")
+    r2 = _requests_get_fallback(url, timeout)
+    if debug_info is not None:
+        debug_info.append(f"  requests: {'OK' if r2['ok'] else r2.get('error', 'failed')} | {r2['latency_ms']}ms")
+    return r2 if r2["ok"] else r  # prefer the one with more data
 
 
 # ── Multi-page Fetch & Parse ──
@@ -243,10 +217,6 @@ def normalize(s: str) -> str:
 
 
 def fetch_all_pages(symbol: str, timeout: int = 20) -> Dict:
-    """
-    Fetch ALL pages from Codal for a symbol using session cookies.
-    Returns {letters, total_available, method, debug}.
-    """
     all_letters = []
     debug_info = []
     method = "failed"
@@ -255,28 +225,11 @@ def fetch_all_pages(symbol: str, timeout: int = 20) -> Dict:
         nonlocal all_letters, method
         url1 = codal_api_url(symbol, page=1, length=PER_PAGE)
         debug_info.append(f"→ [Direct] Page 1 fetch...")
-        r1 = _http_get_session(url1, timeout, debug_info)
+        r1 = _http_get(url1, timeout, debug_info)
         debug_info.append(f"  HTTP {r1['status']} | {r1['latency_ms']}ms | {len(r1['text'])} chars")
 
-        if not r1["ok"] or r1["status"] != 200:
-            debug_info.append(f"  ✗ {r1['error'] or 'HTTP ' + str(r1['status'])}")
-
-            # If connection reset → try refreshing session once
-            if "Connection" in (r1['error'] or "") or "10054" in (r1['error'] or ""):
-                debug_info.append("  → Connection reset! Refreshing session cookies...")
-                _refresh_codal_session(debug_info)
-                r1_retry = _http_get_session(url1, timeout, debug_info)
-                debug_info.append(f"  Retry → HTTP {r1_retry['status']} | {r1_retry['latency_ms']}ms | {len(r1_retry['text'])} chars")
-                if r1_retry["ok"] and r1_retry["status"] == 200 and len(r1_retry["text"]) > 20:
-                    r1 = r1_retry
-                else:
-                    debug_info.append(f"  ✗ Retry also failed: {r1_retry.get('error', 'unknown')}")
-                    return False
-            else:
-                return False
-
-        if len(r1["text"]) < 20:
-            debug_info.append("  ✗ Response too short")
+        if not r1["ok"] or len(r1["text"]) < 20:
+            debug_info.append(f"  ✗ {r1.get('error', 'empty response')}")
             return False
 
         letters1 = parse_codal_xml(r1["text"])
@@ -290,15 +243,14 @@ def fetch_all_pages(symbol: str, timeout: int = 20) -> Dict:
 
         all_letters.extend(letters1)
 
-        # Multi-page
         if total_count > PER_PAGE:
             total_pages = (total_count + PER_PAGE - 1) // PER_PAGE
-            debug_info.append(f"  Total={total_count} > {PER_PAGE}, fetching {total_pages} pages total")
+            debug_info.append(f"  Total={total_count} > {PER_PAGE}, fetching {total_pages} pages")
             for page in range(2, total_pages + 1):
                 url = codal_api_url(symbol, page=page, length=PER_PAGE)
-                r = _http_get_session(url, timeout, debug_info)
-                debug_info.append(f"→ Page {page}: HTTP {r['status']} | {r['latency_ms']}ms | {len(r['text'])} chars")
-                if r["ok"] and r["status"] == 200:
+                r = _http_get(url, timeout, debug_info)
+                debug_info.append(f"→ Page {page}: {r['latency_ms']}ms | {len(r['text'])} chars")
+                if r["ok"] and len(r["text"]) > 20:
                     page_letters = parse_codal_xml(r["text"])
                     all_letters.extend(page_letters)
                     debug_info.append(f"  +{len(page_letters)} letters (total: {len(all_letters)})")
@@ -306,7 +258,7 @@ def fetch_all_pages(symbol: str, timeout: int = 20) -> Dict:
                         debug_info.append("  Empty page, stopping")
                         break
                 else:
-                    debug_info.append(f"  ✗ {r['error'] or 'HTTP ' + str(r['status'])}")
+                    debug_info.append(f"  ✗ {r.get('error', 'failed')}")
                     break
                 time.sleep(0.5)
 
@@ -325,19 +277,17 @@ def fetch_all_pages(symbol: str, timeout: int = 20) -> Dict:
 
         url1 = codal_api_url(symbol, page=1, length=PER_PAGE)
         fetch_url = f"{proxy_base}?url={quote(url1)}"
-        r1 = _http_get_simple(fetch_url, timeout * 2)
-        debug_info.append(f"  Proxy HTTP {r1['status']} | {r1['latency_ms']}ms | {len(r1['text'])} chars")
+        r1 = _curl_get(fetch_url, timeout * 2)
+        debug_info.append(f"  Proxy: {'OK' if r1['ok'] else r1.get('error', 'failed')} | {r1['latency_ms']}ms | {len(r1['text'])} chars")
 
-        if not r1["ok"] or r1["status"] != 200 or len(r1["text"]) < 20:
-            debug_info.append(f"  ✗ Proxy failed: {r1['error'] or 'HTTP ' + str(r1['status'])}")
+        if not r1["ok"] or len(r1["text"]) < 20:
             return False
 
         letters1 = parse_codal_xml(r1["text"])
         total_count = extract_total_count(r1["text"])
-        debug_info.append(f"  Parsed {len(letters1)} letters via proxy | TotalCount={total_count}")
+        debug_info.append(f"  Proxy: {len(letters1)} letters | TotalCount={total_count}")
 
         if not letters1:
-            debug_info.append(f"  Proxy response preview: {r1['text'][:300]}")
             return False
 
         all_letters.extend(letters1)
@@ -347,12 +297,11 @@ def fetch_all_pages(symbol: str, timeout: int = 20) -> Dict:
             for page in range(2, total_pages + 1):
                 url = codal_api_url(symbol, page=page, length=PER_PAGE)
                 fetch_url = f"{proxy_base}?url={quote(url)}"
-                r = _http_get_simple(fetch_url, timeout * 2)
-                debug_info.append(f"→ Proxy Page {page}: HTTP {r['status']} | {r['latency_ms']}ms")
-                if r["ok"] and r["status"] == 200:
+                r = _curl_get(fetch_url, timeout * 2)
+                if r["ok"] and len(r["text"]) > 20:
                     page_letters = parse_codal_xml(r["text"])
                     all_letters.extend(page_letters)
-                    debug_info.append(f"  +{len(page_letters)} letters")
+                    debug_info.append(f"  +{len(page_letters)} proxy letters")
                     if len(page_letters) == 0:
                         break
                 else:
@@ -378,11 +327,9 @@ def fetch_all_pages(symbol: str, timeout: int = 20) -> Dict:
 
 
 def fetch_and_parse(symbol: str, timeout: int = 20) -> dict:
-    """Fetch ALL pages from codal.ir, parse, filter, and return final reports."""
     result = fetch_all_pages(symbol, timeout)
     letters = result["letters"]
     reports = _filter_and_build(letters, symbol)
-
     return {
         "reports": reports,
         "company_name": reports[0]["company_name"] if reports else symbol,
