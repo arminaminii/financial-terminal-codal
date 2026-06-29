@@ -1,0 +1,569 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Codal Crawler</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0b1120;--card:#131c31;--border:#1e2d4a;--text:#94a3b8;--green:#34d399;--red:#f87171;--yellow:#fbbf24;--blue:#38bdf8;--purple:#a855f7}
+body{font-family:Tahoma,'Segoe UI',sans-serif;background:var(--bg);color:#fff;min-height:100vh;display:flex;flex-direction:column}
+a{color:var(--blue);text-decoration:none}
+
+/* Header */
+.header{sticky;top:0;z-index:30;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--bg);display:flex;align-items:center;justify-content:space-between;max-width:1200px;margin:0 auto;width:100%}
+.header-left{display:flex;align-items:center;gap:12px}
+.header-icon{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;background:rgba(52,211,153,.12)}
+.header-title{font-size:15px;font-weight:900;color:#fff;line-height:1.2}
+.header-sub{font-size:10px;color:var(--text)}
+.status-dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-left:4px}
+.header-right{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--green);background:rgba(52,211,153,.08);border:1px solid rgba(52,211,153,.15);padding:4px 10px;border-radius:6px}
+
+/* Search */
+.search-section{padding:16px;border-bottom:1px solid var(--border)}
+.search-box{max-width:600px;margin:0 auto;display:flex;gap:10px}
+.search-input{flex:1;height:44px;padding:0 40px 0 14px;border:1px solid var(--border);border-radius:8px;background:rgba(0,0,0,.3);color:#fff;font-size:14px;font-family:inherit;outline:none}
+.search-input:focus{border-color:var(--green)}
+.search-input::placeholder{color:var(--text)}
+.search-btn{height:44px;padding:0 24px;border:none;border-radius:8px;background:var(--green);color:#0b1120;font-weight:900;font-size:14px;cursor:pointer;display:flex;align-items:center;gap:6px;font-family:inherit}
+.search-btn:disabled{opacity:.5;cursor:not-allowed}
+.quick-symbols{max-width:600px;margin:12px auto 0;display:flex;flex-wrap:wrap;gap:6px}
+.quick-btn{padding:5px 12px;border-radius:6px;font-size:12px;font-weight:700;border:1px solid rgba(56,189,248,.2);background:rgba(56,189,248,.08);color:var(--blue);cursor:pointer;transition:all .2s}
+.quick-btn:hover{background:rgba(56,189,248,.15);transform:scale(1.03)}
+
+/* Terminal */
+.terminal{max-width:1200px;margin:16px auto;width:100%;padding:0 16px;display:none}
+.terminal.show{display:block}
+.terminal-inner{border-radius:12px;overflow:hidden;border:1px solid var(--border);background:#0a0e1a}
+.terminal-head{display:flex;align-items:center;justify-content:space-between;padding:8px 16px;border-bottom:1px solid rgba(255,255,255,.06);font-size:11px;font-family:monospace}
+.terminal-left{display:flex;align-items:center;gap:8px;color:var(--text)}
+.terminal-right{display:flex;gap:12px;font-size:10px;color:var(--text);font-family:monospace}
+.terminal-body{padding:12px 16px;max-height:200px;overflow-y:auto;font-family:monospace;font-size:11px;line-height:1.8}
+.terminal-body::-webkit-scrollbar{width:4px}
+.terminal-body::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:4px}
+.log-line{display:flex;align-items:flex-start;gap:8px}
+.log-icon{flex-shrink:0;margin-top:2px}
+.log-time{color:var(--text);min-width:40px;flex-shrink:0}
+.log-msg{color:rgba(255,255,255,.75)}
+.log-msg.error{color:var(--red)}
+.cursor{color:var(--green);animation:blink 1.2s infinite}
+@keyframes blink{0%,100%{opacity:.3}50%{opacity:1}}
+.running-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 1.5s infinite;display:inline-block;margin-left:4px}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.done-text{color:var(--green);font-size:10px}
+
+/* Symbol header */
+.symbol-header{max-width:1200px;margin:16px auto 0;padding:0 16px;display:none}
+.symbol-header.show{display:block}
+.symbol-header h2{font-size:18px;font-weight:900;margin-bottom:2px}
+.symbol-company{font-size:13px;color:var(--text)}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;margin-right:6px}
+.badge-cache{background:rgba(56,189,248,.1);color:var(--blue)}
+.badge-method{background:rgba(52,211,153,.1);color:var(--green)}
+.symbol-stats{display:flex;gap:16px;margin-top:6px;font-size:11px;color:var(--text)}
+
+/* Error */
+.error-box{max-width:1200px;margin:16px auto;padding:0 16px;display:none}
+.error-box.show{display:block}
+.error-inner{padding:20px;border-radius:12px;border:1px solid var(--border);background:var(--card)}
+.error-title{font-size:14px;font-weight:700;margin-bottom:4px;color:var(--red)}
+.error-msg{font-size:12px;color:var(--text);margin-bottom:12px}
+.retry-btn{padding:8px 16px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:12px;font-family:inherit}
+.retry-btn:hover{color:#fff;border-color:#fff}
+
+/* Filters */
+.filters{max-width:1200px;margin:12px auto 0;padding:0 16px;display:none}
+.filters.show{display:block}
+.filter-inner{padding:12px;border-radius:12px;border:1px solid var(--border);background:var(--card);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.filter-input{flex:1;min-width:180px;height:32px;padding:0 32px 0 10px;border:1px solid var(--border);border-radius:6px;background:rgba(0,0,0,.3);color:#fff;font-size:12px;font-family:inherit;outline:none}
+.filter-input:focus{border-color:var(--blue)}
+.filter-toggle{padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:11px;color:var(--text);cursor:pointer;background:transparent;font-family:inherit;display:flex;align-items:center;gap:4px}
+.filter-toggle .dot{width:6px;height:6px;border-radius:50%;background:var(--blue);display:none}
+.filter-toggle.active .dot{display:block}
+.filter-options{display:none;width:100%;padding-top:12px;border-top:1px solid var(--border);margin-top:8px;flex-wrap:wrap;gap:10px}
+.filter-options.show{display:flex}
+.filter-group{display:flex;align-items:center;gap:4px;font-size:10px;color:var(--text)}
+.filter-btn{padding:3px 8px;border-radius:4px;font-size:10px;font-weight:700;border:none;cursor:pointer;background:transparent;color:var(--text);font-family:inherit}
+.filter-btn.active{background:rgba(56,189,248,.15);color:var(--blue)}
+.filter-btn.active-audited{background:rgba(52,211,153,.15);color:var(--green)}
+
+/* Table */
+.table-wrap{max-width:1200px;margin:12px auto 0;padding:0 16px;display:none}
+.table-wrap.show{display:block}
+.table-inner{border-radius:12px;overflow:hidden;border:1px solid var(--border);background:var(--card)}
+.table-head{display:none;padding:10px 16px;grid-template-columns:1fr 110px 100px 70px 70px 50px;gap:8px;font-size:10px;font-weight:700;color:var(--text);text-transform:uppercase;border-bottom:1px solid var(--border);letter-spacing:.5px}
+@media(min-width:640px){.table-head{display:grid}}
+.table-head button{background:none;border:none;color:var(--text);cursor:pointer;font-size:10px;font-weight:700;font-family:inherit;text-align:right;display:flex;align-items:center;gap:4px}
+.table-head button:hover{color:#fff}
+.table-row{border-bottom:1px solid var(--border);cursor:pointer;transition:background .15s}
+.table-row:last-child{border-bottom:none}
+.table-row:hover{background:rgba(255,255,255,.02)}
+.table-row-inner{padding:12px 16px;display:grid;grid-template-columns:1fr;gap:6px}
+@media(min-width:640px){.table-row-inner{grid-template-columns:1fr 110px 100px 70px 70px 50px;gap:8px;align-items:center}}
+.row-title{font-size:13px;color:#fff;display:flex;align-items:center;gap:8px;min-width:0}
+.row-title span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row-date{font-size:11px;color:var(--text);display:flex;align-items:center;gap:4px}
+.row-type{display:none}
+@media(min-width:640px){.row-type{display:block}}
+.row-period{display:none}
+@media(min-width:640px){.row-period{display:block}}
+.row-status{display:none}
+@media(min-width:640px){.row-status{display:flex;justify-content:flex-end}}
+.row-link{display:none;justify-content:flex-end}
+@media(min-width:640px){.row-link{display:flex}}
+.row-link a{padding:4px;border-radius:4px;color:var(--blue);transition:background .15s}
+.row-link a:hover{background:rgba(56,189,248,.1)}
+
+/* Badges */
+.type-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700}
+.period-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700}
+.audit-badge{font-size:10px;display:flex;align-items:center;gap:3px}
+.audit-badge.audited{color:var(--green)}
+.audit-badge.draft{color:var(--text)}
+.mobile-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+@media(min-width:640px){.mobile-meta{display:none}}
+
+/* Expanded details */
+.expanded{background:rgba(0,0,0,.15);padding:16px;border-top:1px solid var(--border);display:none}
+.expanded.show{display:block}
+.detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;padding:12px;background:rgba(0,0,0,.2);border-radius:8px;margin-bottom:12px}
+.detail-item .label{font-size:10px;color:var(--text)}
+.detail-item .value{font-size:12px;color:#fff;margin-top:2px}
+.detail-actions{display:flex;gap:8px;flex-wrap:wrap}
+.detail-btn{padding:6px 12px;border-radius:6px;font-size:11px;font-weight:700;border:1px solid;cursor:pointer;display:flex;align-items:center;gap:4px;font-family:inherit;transition:transform .15s}
+.detail-btn:hover{transform:scale(1.02)}
+.btn-codal{background:rgba(56,189,248,.12);color:var(--blue);border-color:rgba(56,189,248,.2)}
+.btn-excel{background:rgba(52,211,153,.12);color:var(--green);border-color:rgba(52,211,153,.2)}
+.btn-copy{background:rgba(148,163,184,.08);color:var(--text);border-color:rgba(148,163,184,.12)}
+
+/* Summary */
+.summary{max-width:1200px;margin:8px auto 0;padding:0 16px;display:none}
+.summary.show{display:block}
+.summary-inner{display:flex;justify-content:space-between;font-size:10px;color:var(--text);padding:8px 12px}
+
+/* Empty state */
+.empty-state{padding:80px 16px;text-align:center;display:none}
+.empty-state.show{display:block}
+.empty-icon{width:64px;height:64px;border-radius:16px;margin:0 auto 16px;display:flex;align-items:center;justify-content:center;background:rgba(52,211,153,.08);border:1px solid rgba(52,211,153,.12)}
+.empty-title{font-size:14px;font-weight:700;color:#fff;margin-bottom:4px}
+.empty-sub{font-size:12px;color:var(--text)}
+
+/* Loading skeleton */
+.skeleton{max-width:1200px;margin:12px auto 0;padding:0 16px;display:none}
+.skeleton.show{display:block}
+.sk-row{padding:14px 16px;border-radius:8px;border:1px solid var(--border);background:var(--card);margin-bottom:6px;display:flex;gap:16px;align-items:center}
+.sk-bar{height:14px;border-radius:4px;background:rgba(255,255,255,.05);animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+/* Footer */
+.footer{margin-top:auto;padding:12px 16px;border-top:1px solid var(--border);text-align:center;font-size:10px;color:var(--text);background:var(--bg)}
+
+/* SVG icons */
+.icon{width:14px;height:14px;flex-shrink:0}
+.icon-sm{width:11px;height:11px}
+.icon-lg{width:18px;height:18px}
+.icon-xl{width:28px;height:28px}
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header class="header">
+  <div class="header-left">
+    <div class="header-icon">
+      <svg class="icon-xl" fill="none" viewBox="0 0 24 24" stroke="var(--green)" stroke-width="1.5">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5a17.92 17.92 0 01-8.716-2.247m0 0A9 9 0 013 12c0-1.47.353-2.858.978-4.082"/>
+      </svg>
+    </div>
+    <div>
+      <div class="header-title">Codal Crawler</div>
+      <div class="header-sub">Independent Web Scraper</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <span class="status-dot" style="background:var(--green)"></span> Direct
+  </div>
+</header>
+
+<!-- SEARCH -->
+<section class="search-section">
+  <div class="search-box">
+    <div style="position:relative;flex:1">
+      <svg style="position:absolute;right:12px;top:50%;transform:translateY(-50%)" class="icon" fill="none" viewBox="0 0 24 24" stroke="var(--text)" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+      <input id="searchInput" class="search-input" type="text" placeholder="نام شرکت یا نماد بورسی..." dir="rtl" autocomplete="off">
+    </div>
+    <button id="crawlBtn" class="search-btn" onclick="doCrawl()">
+      <svg class="icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z"/></svg>
+      Crawl
+    </button>
+  </div>
+  <div class="quick-symbols">
+    <button class="quick-btn" onclick="quickCrawl('فولاد')">فولاد</button>
+    <button class="quick-btn" onclick="quickCrawl('خودرو')">خودرو</button>
+    <button class="quick-btn" onclick="quickCrawl('فخوز')">فخوز</button>
+    <button class="quick-btn" onclick="quickCrawl('شبندر')">شبندر</button>
+    <button class="quick-btn" onclick="quickCrawl('خگستر')">خگستر</button>
+    <button class="quick-btn" onclick="quickCrawl('وترام')">وترام</button>
+  </div>
+</section>
+
+<!-- MAIN -->
+<main style="flex:1">
+
+  <!-- Terminal -->
+  <div id="terminal" class="terminal">
+    <div class="terminal-inner">
+      <div class="terminal-head">
+        <div class="terminal-left">
+          <svg class="icon-sm" fill="none" viewBox="0 0 24 24" stroke="var(--text)" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+          <span>crawl-engine</span>
+          <span id="runStatus"></span>
+        </div>
+        <div class="terminal-right">
+          <span id="statRaw"></span>
+          <span id="statParsed"></span>
+          <span id="statTime"></span>
+        </div>
+      </div>
+      <div id="logBody" class="terminal-body"></div>
+    </div>
+  </div>
+
+  <!-- Error -->
+  <div id="errorBox" class="error-box">
+    <div class="error-inner">
+      <div class="error-title" id="errorTitle">خطا در کرال</div>
+      <div class="error-msg" id="errorMsg"></div>
+      <button class="retry-btn" onclick="doCrawl()">⟳ تلاش مجدد</button>
+    </div>
+  </div>
+
+  <!-- Symbol header -->
+  <div id="symbolHeader" class="symbol-header">
+    <h2 id="symbolName"></h2>
+    <div id="symbolBadges"></div>
+    <div class="symbol-stats" id="symbolStats"></div>
+  </div>
+
+  <!-- Loading -->
+  <div id="skeleton" class="skeleton">
+    {% for i in "123456" %}
+    <div class="sk-row"><div class="sk-bar" style="width:80px"></div><div class="sk-bar" style="flex:1"></div><div class="sk-bar" style="width:100px"></div><div class="sk-bar" style="width:60px"></div></div>
+    {% endfor %}
+  </div>
+
+  <!-- Empty -->
+  <div id="emptyState" class="empty-state">
+    <div class="empty-icon">
+      <svg class="icon-xl" fill="none" viewBox="0 0 24 24" stroke="var(--green)" stroke-width="1.5" style="opacity:.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5a17.92 17.92 0 01-8.716-2.247m0 0A9 9 0 013 12c0-1.47.353-2.858.978-4.082"/></svg>
+    </div>
+    <div class="empty-title">Web Crawler Ready</div>
+    <div class="empty-sub">نماد بورسی را وارد کنید تا تمام گزارش‌های کدال کرال شوند</div>
+  </div>
+
+  <!-- No results -->
+  <div id="noResults" class="empty-state">
+    <div class="empty-icon">
+      <svg class="icon-xl" fill="none" viewBox="0 0 24 24" stroke="var(--text)" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>
+    </div>
+    <div class="empty-sub">گزارشی برای این نماد در کدال یافت نشد</div>
+  </div>
+
+  <!-- Filters -->
+  <div id="filters" class="filters">
+    <div class="filter-inner">
+      <div style="position:relative;flex:1;min-width:180px">
+        <svg style="position:absolute;right:10px;top:50%;transform:translateY(-50%)" class="icon-sm" fill="none" viewBox="0 0 24 24" stroke="var(--text)" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <input id="filterText" class="filter-input" type="text" placeholder="فیلتر عنوان..." dir="rtl" oninput="applyFilters()">
+      </div>
+      <button id="filterToggle" class="filter-toggle" onclick="toggleFilters()">
+        <svg class="icon-sm" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+        فیلترها <span class="dot"></span>
+      </button>
+      <div id="filterOptions" class="filter-options">
+        <div class="filter-group">حسابرسی:
+          <button class="filter-btn active" onclick="setFilter('audit','all',this)">همه</button>
+          <button class="filter-btn" onclick="setFilter('audit','audited',this)">حسابرسی‌شده</button>
+          <button class="filter-btn" onclick="setFilter('audit','not',this)">غیرحسابرسی</button>
+        </div>
+        <div class="filter-group">دوره:
+          <button class="filter-btn active" onclick="setFilter('period','all',this)">همه</button>
+          <button class="filter-btn" onclick="setFilter('period','سالانه',this)">سالانه</button>
+          <button class="filter-btn" onclick="setFilter('period','میانی',this)">میانی</button>
+        </div>
+        <div class="filter-group">نوع:
+          <button class="filter-btn active" onclick="setFilter('type','all',this)">همه</button>
+          <div id="typeFilters"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Table -->
+  <div id="tableWrap" class="table-wrap">
+    <div class="table-inner">
+      <div class="table-head">
+        <button onclick="sortBy('title')">عنوان گزارش <span id="sortTitle"></span></button>
+        <button onclick="sortBy('date')">تاریخ <span id="sortDate">▼</span></button>
+        <div>نوع گزارش</div>
+        <div>دوره</div>
+        <div>وضعیت</div>
+        <div>لینک</div>
+      </div>
+      <div id="tableBody"></div>
+    </div>
+  </div>
+
+  <!-- Summary -->
+  <div id="summary" class="summary">
+    <div class="summary-inner">
+      <span id="summaryCount"></span>
+      <span>حسابرسی‌شده: <span id="summaryAudited">0</span></span>
+      <span>سالانه: <span id="summaryAnnual">0</span></span>
+      <span>میانی: <span id="summaryInterim">0</span></span>
+    </div>
+  </div>
+
+</main>
+
+<!-- FOOTER -->
+<footer class="footer">
+  Codal Crawler — Independent Web Scraper
+</footer>
+
+<script>
+let reports = [];
+let activeSymbol = '';
+let sortField = 'date';
+let sortDir = 'desc';
+let expandedIdx = null;
+let filters = {audit:'all', period:'all', type:'all', text:''};
+
+const TYPE_COLORS = {
+  'صورت\u200cهای مالی': ['rgba(56,189,248,.12)','var(--blue)'],
+  'سود و زیان': ['rgba(52,211,153,.12)','var(--green)'],
+  'ترازنامه': ['rgba(251,191,36,.12)','var(--yellow)'],
+  'جریان وجوه نقد': ['rgba(168,85,247,.12)','var(--purple)'],
+  'تغییرات حقوق صاحبان': ['rgba(248,113,113,.12)','var(--red)'],
+  'گزارش تفسیری': ['rgba(56,189,248,.08)','var(--blue)'],
+  'سایر': ['rgba(148,163,184,.06)','var(--text)'],
+};
+
+const STATUS_ICONS = {
+  info: '<svg class="icon-sm" fill="none" viewBox="0 0 24 24" stroke="var(--blue)" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4m0-4h.01"/></svg>',
+  success: '<svg class="icon-sm" fill="none" viewBox="0 0 24 24" stroke="var(--green)" stroke-width="2"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
+  warn: '<svg class="icon-sm" fill="none" viewBox="0 0 24 24" stroke="var(--yellow)" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+  error: '<svg class="icon-sm" fill="none" viewBox="0 0 24 24" stroke="var(--red)" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
+};
+
+document.getElementById('searchInput').addEventListener('keydown', e => { if (e.key === 'Enter') doCrawl(); });
+
+function quickCrawl(sym) {
+  document.getElementById('searchInput').value = sym;
+  doCrawl();
+}
+
+function show(id) { document.getElementById(id).classList.add('show'); }
+function hide(id) { document.getElementById(id).classList.remove('show'); }
+
+function addLog(step, msg, status) {
+  const body = document.getElementById('logBody');
+  const s = STATUS_ICONS[status] || STATUS_ICONS.info;
+  const cls = status === 'error' ? 'log-msg error' : 'log-msg';
+  const time = body.children.length > 0 ? ((Date.now() - window._t0) / 1000).toFixed(1).padStart(4, '0') + 's' : '0.0s';
+  body.innerHTML += `<div class="log-line"><span class="log-icon">${s}</span><span class="log-time">${time}</span><span class="${cls}">${msg}</span></div>`;
+  body.scrollTop = body.scrollHeight;
+}
+
+async function doCrawl(sym) {
+  const symbol = (sym || document.getElementById('searchInput').value).trim();
+  if (!symbol) return;
+  activeSymbol = symbol;
+  window._t0 = Date.now();
+
+  // Reset UI
+  hide('emptyState'); hide('noResults'); hide('errorBox'); hide('symbolHeader');
+  hide('filters'); hide('tableWrap'); hide('summary');
+  document.getElementById('logBody').innerHTML = '';
+  document.getElementById('tableBody').innerHTML = '';
+  show('terminal'); show('skeleton');
+  document.getElementById('crawlBtn').disabled = true;
+  document.getElementById('runStatus').innerHTML = '<span class="running-dot"></span> RUNNING';
+
+  try {
+    const resp = await fetch(`/api/crawl/?symbol=${encodeURIComponent(symbol)}`);
+    const json = await resp.json();
+
+    // Render logs
+    (json.logs || []).forEach(l => addLog(l.step, l.message, l.status));
+
+    if (json.crawl_failed || json.error) {
+      hide('skeleton'); hide('terminal');
+      document.getElementById('errorTitle').textContent = 'خطا در کرال';
+      document.getElementById('errorMsg').textContent = json.message || 'خطا در دریافت اطلاعات';
+      show('errorBox');
+      document.getElementById('runStatus').innerHTML = '';
+      document.getElementById('crawlBtn').disabled = false;
+      return;
+    }
+
+    reports = json.reports || [];
+    hide('skeleton');
+
+    // Stats
+    if (json.total_raw) document.getElementById('statRaw').textContent = 'raw: ' + json.total_raw;
+    if (json.total_final) document.getElementById('statParsed').textContent = 'parsed: ' + json.total_final;
+    if (json.duration) document.getElementById('statTime').textContent = (json.duration/1000).toFixed(1) + 's';
+
+    if (reports.length === 0) {
+      document.getElementById('runStatus').innerHTML = '';
+      show('noResults');
+      document.getElementById('crawlBtn').disabled = false;
+      return;
+    }
+
+    document.getElementById('runStatus').innerHTML = '<span class="done-text">DONE ✓</span>';
+
+    // Symbol header
+    let badges = '';
+    if (json.from_cache) badges += '<span class="badge badge-cache">کش</span>';
+    if (json.crawl_method) badges += `<span class="badge badge-method">${json.crawl_method}</span>`;
+    document.getElementById('symbolName').textContent = symbol;
+    document.getElementById('symbolBadges').innerHTML = badges + (json.company_name !== symbol ? `<span style="font-size:13px;color:var(--text)">— ${json.company_name||''}</span>` : '');
+    document.getElementById('symbolStats').innerHTML = `
+      <span>📄 ${reports.length} گزارش</span>
+      <span style="color:var(--green)">🛡 حسابرسی: ${reports.filter(r=>r.is_audited).length}</span>
+      <span style="color:var(--yellow)">📅 سالانه: ${reports.filter(r=>r.period_type==='سالانه').length}</span>
+    `;
+    show('symbolHeader');
+
+    buildTypeFilters();
+    applyFilters();
+    show('filters'); show('tableWrap'); show('summary');
+
+  } catch(err) {
+    hide('skeleton');
+    addLog('error', err.message, 'error');
+    document.getElementById('errorTitle').textContent = 'خطا';
+    document.getElementById('errorMsg').textContent = err.message;
+    show('errorBox');
+  }
+  document.getElementById('crawlBtn').disabled = false;
+}
+
+function buildTypeFilters() {
+  const types = [...new Set(reports.map(r => r.report_type))];
+  const container = document.getElementById('typeFilters');
+  container.innerHTML = types.filter(t => t !== 'سایر').map(t =>
+    `<button class="filter-btn" style="display:inline-block" onclick="setFilter('type','${t}',this)">${t}</button>`
+  ).join('');
+}
+
+function setFilter(group, value, btn) {
+  filters[group] = value;
+  const parent = btn.parentElement;
+  parent.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  if (group === 'audit' && value === 'audited') btn.classList.add('active-audited');
+  applyFilters();
+}
+
+function toggleFilters() {
+  const opts = document.getElementById('filterOptions');
+  const toggle = document.getElementById('filterToggle');
+  opts.classList.toggle('show');
+  toggle.classList.toggle('active');
+}
+
+function sortBy(field) {
+  if (sortField === field) sortDir = sortDir === 'desc' ? 'asc' : 'desc';
+  else { sortField = field; sortDir = 'desc'; }
+  document.getElementById('sortTitle').textContent = sortField==='title' ? (sortDir==='desc'?'▼':'▲') : '';
+  document.getElementById('sortDate').textContent = sortField==='date' ? (sortDir==='desc'?'▼':'▲') : '▼';
+  renderTable();
+}
+
+function getFiltered() {
+  let result = reports;
+  if (filters.text) {
+    const q = filters.text.toLowerCase();
+    result = result.filter(r => r.title.toLowerCase().includes(q) || r.company_name.toLowerCase().includes(q));
+  }
+  if (filters.audit === 'audited') result = result.filter(r => r.is_audited);
+  else if (filters.audit === 'not') result = result.filter(r => !r.is_audited);
+  if (filters.period !== 'all') result = result.filter(r => r.period_type === filters.period);
+  if (filters.type !== 'all') result = result.filter(r => r.report_type === filters.type);
+
+  result.sort((a,b) => {
+    let cmp = 0;
+    if (sortField === 'date') cmp = (a.date||'').localeCompare(b.date||'');
+    else cmp = a.title.localeCompare(b.title, 'fa');
+    return sortDir === 'desc' ? -cmp : cmp;
+  });
+  return result;
+}
+
+function applyFilters() {
+  filters.text = document.getElementById('filterText').value.trim();
+  renderTable();
+}
+
+function renderTable() {
+  const filtered = getFiltered();
+  const body = document.getElementById('tableBody');
+
+  if (filtered.length === 0) { body.innerHTML = ''; return; }
+
+  body.innerHTML = filtered.map((r, i) => {
+    const tc = TYPE_COLORS[r.report_type] || TYPE_COLORS['سایر'];
+    const isAnnual = r.period_type === 'سالانه';
+    const isExp = expandedIdx === i;
+    return `
+    <div class="table-row" onclick="toggleExpand(${i})">
+      <div class="table-row-inner">
+        <div class="row-title">
+          <svg class="icon-sm" fill="none" viewBox="0 0 24 24" stroke="var(--text)" stroke-width="2"><path d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>
+          <span title="${r.title}">${r.title}</span>
+        </div>
+        <div class="row-date">${r.date || '—'}</div>
+        <div class="row-type"><span class="type-badge" style="background:${tc[0]};color:${tc[1]}">${r.report_type}</span></div>
+        <div class="row-period"><span class="period-badge" style="background:${isAnnual?'rgba(251,191,36,.1)':'rgba(148,163,184,.06)'};color:${isAnnual?'var(--yellow)':'var(--text)'}">${r.period_type}</span></div>
+        <div class="row-status"><span class="audit-badge ${r.is_audited?'audited':'draft'}">${r.is_audited?'🛡 حسابرسی':'📋 پیش‌نویس'}</span></div>
+        <div class="row-link">${r.url?`<a href="${r.url}" target="_blank" onclick="event.stopPropagation()"><svg class="icon-sm" fill="none" viewBox="0 0 24 24" stroke="var(--blue)" stroke-width="2"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6M15 3h6v6M10 14L21 3"/></svg></a>`:''}</div>
+        <div class="mobile-meta">
+          ${r.date?`<span style="font-size:10px;color:var(--text)">📅 ${r.date}</span>`:''}
+          <span class="type-badge" style="background:${tc[0]};color:${tc[1]};font-size:9px">${r.report_type}</span>
+          ${r.is_audited?'<span style="font-size:10px;color:var(--green)">🛡</span>':''}
+        </div>
+      </div>
+      <div class="expanded ${isExp?'show':''}">
+        <div class="detail-grid">
+          <div class="detail-item"><div class="label">کد نامه</div><div class="value" style="font-family:monospace">${r.letter_code||'—'}</div></div>
+          <div class="detail-item"><div class="label">شماره پیگیری</div><div class="value" style="font-family:monospace">${r.tracing_no||'—'}</div></div>
+          <div class="detail-item"><div class="label">نوع صورت‌ها</div><div class="value">${r.is_consolidated?'تلفیقی':'غیرتلفیقی'}</div></div>
+          <div class="detail-item"><div class="label">شرکت</div><div class="value">${r.company_name}</div></div>
+        </div>
+        <div class="detail-actions">
+          ${r.url?`<a href="${r.url}" target="_blank" class="detail-btn btn-codal"><svg class="icon-sm" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6M15 3h6v6M10 14L21 3"/></svg> مشاهده در کدال</a>`:''}
+          ${r.excel_url?`<a href="${r.excel_url}" target="_blank" class="detail-btn btn-excel"><svg class="icon-sm" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg> دانلود اکسل</a>`:''}
+          ${r.url?`<button class="detail-btn btn-copy" onclick="event.stopPropagation();navigator.clipboard.writeText('${r.url}')"><svg class="icon-sm" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg> کپی لینک</button>`:''}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Update summary
+  document.getElementById('summaryCount').textContent = filtered.length + ' گزارش' + (filtered.length !== reports.length ? ` (از ${reports.length})` : '');
+  document.getElementById('summaryAudited').textContent = filtered.filter(r=>r.is_audited).length;
+  document.getElementById('summaryAnnual').textContent = filtered.filter(r=>r.period_type==='سالانه').length;
+  document.getElementById('summaryInterim').textContent = filtered.filter(r=>r.period_type==='میانی').length;
+}
+
+function toggleExpand(idx) {
+  expandedIdx = expandedIdx === idx ? null : idx;
+  renderTable();
+}
+</script>
+</body>
+</html>
