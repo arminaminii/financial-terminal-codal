@@ -1,9 +1,9 @@
 import re
 import json
-from datetime import datetime
+import time
 from typing import List, Optional, Dict
+from urllib.parse import quote
 import requests
-from django.conf import settings
 from crawler.models import CodalCache, ProxyConfig
 
 
@@ -21,9 +21,8 @@ def extract_tag(block: str, tag: str) -> str:
 def parse_codal_xml(xml_text: str) -> List[dict]:
     """Parse Codal search API XML response → list of letter dicts."""
     results = []
-    # Split by <Letter> blocks
     blocks = re.split(r"<Letter\b", xml_text, flags=re.IGNORECASE)
-    for block in blocks[1:]:  # skip first (before first <Letter>)
+    for block in blocks[1:]:
         letter = {
             "symbol": extract_tag(block, "Symbol"),
             "companyname": extract_tag(block, "CompanyName"),
@@ -37,6 +36,19 @@ def parse_codal_xml(xml_text: str) -> List[dict]:
         if letter["symbol"] or letter["title"]:
             results.append(letter)
     return results
+
+
+def extract_total_count(xml_text: str) -> int:
+    """Extract total search results count from Codal XML."""
+    # Try different possible tags for total count
+    for tag in ["TotalCount", "Total", "Count", "totalcount"]:
+        m = re.search(rf"<{tag}>([\s\S]*?)</{tag}>", xml_text, re.IGNORECASE)
+        if m:
+            try:
+                return int(m.group(1).strip())
+            except ValueError:
+                pass
+    return 0
 
 
 # ── Report Classification ──
@@ -78,69 +90,205 @@ def classify_report(title: str) -> dict:
 
 # ── Codal API URL Builder ──
 
-def codal_api_url(symbol: str) -> str:
-    from urllib.parse import quote
+PER_PAGE = 100  # max items per page
+
+
+def codal_api_url(symbol: str, page: int = 1, length: int = PER_PAGE) -> str:
     e = quote(symbol)
     return (
         f"https://search.codal.ir/api/search/v2/q"
         f"?Symbol={e}&LetterType=6&Category=1"
         f"&Audited=true&NotAudited=true&search=true"
-        f"&PageNumber=1&Length=-1"
+        f"&PageNumber={page}&Length={length}"
         f"&Mains=true&Childs=true&Publisher=true"
         f"&Consolidatable=true&IsNotAudited=true"
         f"&AuditorRef=-1&CompanyState=0&CompanyType=-1"
     )
 
 
-# ── Fetch & Parse ──
+# ── HTTP Fetcher ─
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Accept": "application/xml, text/xml, */*",
+    "Accept-Language": "fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Encoding": "gzip, deflate",
+    "Connection": "keep-alive",
+}
+
+
+def _http_get(url: str, timeout: int = 20) -> Dict:
+    """Single HTTP GET with full error info. Returns {ok, status, text, error, latency_ms}."""
+    t0 = time.time()
+    try:
+        resp = requests.get(url, timeout=timeout, headers=HEADERS, verify=True)
+        latency = int((time.time() - t0) * 1000)
+        return {
+            "ok": True,
+            "status": resp.status_code,
+            "text": resp.text,
+            "headers": dict(resp.headers),
+            "latency_ms": latency,
+            "error": None,
+        }
+    except requests.exceptions.SSLError as e:
+        latency = int((time.time() - t0) * 1000)
+        return {"ok": False, "status": 0, "text": "", "latency_ms": latency, "error": f"SSL Error: {str(e)[:200]}"}
+    except requests.exceptions.Timeout as e:
+        latency = int((time.time() - t0) * 1000)
+        return {"ok": False, "status": 0, "text": "", "latency_ms": latency, "error": f"Timeout ({timeout}s)"}
+    except requests.exceptions.ConnectionError as e:
+        latency = int((time.time() - t0) * 1000)
+        return {"ok": False, "status": 0, "text": "", "latency_ms": latency, "error": f"Connection Error: {str(e)[:200]}"}
+    except Exception as e:
+        latency = int((time.time() - t0) * 1000)
+        return {"ok": False, "status": 0, "text": "", "latency_ms": latency, "error": f"Error: {str(e)[:200]}"}
+
+
+# ── Multi-page Fetch & Parse ──
 
 def normalize(s: str) -> str:
     return re.sub(r"\s+", "", s).strip()
 
 
-def fetch_and_parse(symbol: str, timeout: int = 15) -> dict:
-    """Fetch from codal.ir, parse, and return {reports, company_name, total_raw, method}."""
-    url = codal_api_url(symbol)
+def fetch_all_pages(symbol: str, timeout: int = 20) -> Dict:
+    """
+    Fetch ALL pages from Codal for a symbol.
+    Returns {letters, total_available, pages_fetched, method, debug}.
+    """
+    all_letters = []
+    debug_info = []
+    method = "failed"
 
-    # Try direct fetch first
-    try:
-        resp = requests.get(url, timeout=timeout, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "application/xml, text/xml, */*",
-        })
-        if resp.status_code == 200 and len(resp.text) > 50:
-            letters = parse_codal_xml(resp.text)
-            reports = _filter_and_build(letters, symbol)
-            return {
-                "reports": reports,
-                "company_name": reports[0]["company_name"] if reports else symbol,
-                "total_raw": len(letters),
-                "method": "direct",
-            }
-    except requests.RequestException:
+    def try_direct():
+        nonlocal all_letters, method
+        # Page 1
+        url1 = codal_api_url(symbol, page=1, length=PER_PAGE)
+        debug_info.append(f"→ Page 1: {url1[:80]}...")
+        r1 = _http_get(url1, timeout)
+        debug_info.append(f"  HTTP {r1['status']} | {r1['latency_ms']}ms | {len(r1['text'])} chars")
+
+        if not r1["ok"] or r1["status"] != 200:
+            debug_info.append(f"  ✗ {r1['error'] or 'HTTP ' + str(r1['status'])}")
+            return False
+
+        if len(r1["text"]) < 20:
+            debug_info.append("  ✗ Response too short")
+            return False
+
+        letters1 = parse_codal_xml(r1["text"])
+        total_count = extract_total_count(r1["text"])
+        debug_info.append(f"  Parsed {len(letters1)} letters | TotalCount={total_count}")
+
+        if not letters1:
+            debug_info.append("  ✗ No <Letter> blocks found in XML")
+            # Show first 300 chars of response for debugging
+            debug_info.append(f"  Response preview: {r1['text'][:300]}")
+            return False
+
+        all_letters.extend(letters1)
+
+        # If total_count > PER_PAGE, fetch remaining pages
+        if total_count > PER_PAGE:
+            total_pages = (total_count + PER_PAGE - 1) // PER_PAGE
+            debug_info.append(f"  Total={total_count} > {PER_PAGE}, need {total_pages} pages")
+            for page in range(2, total_pages + 1):
+                url = codal_api_url(symbol, page=page, length=PER_PAGE)
+                r = _http_get(url, timeout)
+                debug_info.append(f"→ Page {page}: HTTP {r['status']} | {r['latency_ms']}ms | {len(r['text'])} chars")
+                if r["ok"] and r["status"] == 200:
+                    page_letters = parse_codal_xml(r["text"])
+                    all_letters.extend(page_letters)
+                    debug_info.append(f"  +{len(page_letters)} letters (total so far: {len(all_letters)})")
+                    if len(page_letters) == 0:
+                        debug_info.append("  Empty page, stopping")
+                        break
+                else:
+                    debug_info.append(f"  ✗ Failed: {r['error'] or 'HTTP ' + str(r['status'])}")
+                    break
+                time.sleep(0.3)  # small delay between pages
+
+        method = "direct"
+        return True
+
+    def try_proxy():
+        nonlocal all_letters, method
+        proxy_config = ProxyConfig.objects.filter(is_active=True).first()
+        if not proxy_config:
+            debug_info.append("No active proxy configured")
+            return False
+
+        proxy_base = proxy_config.proxy_url.rstrip("/")
+        debug_info.append(f"Trying proxy: {proxy_base[:50]}...")
+
+        url1 = codal_api_url(symbol, page=1, length=PER_PAGE)
+        fetch_url = f"{proxy_base}?url={quote(url1)}"
+        r1 = _http_get(fetch_url, timeout * 2)
+        debug_info.append(f"  Proxy HTTP {r1['status']} | {r1['latency_ms']}ms | {len(r1['text'])} chars")
+
+        if not r1["ok"] or r1["status"] != 200 or len(r1["text"]) < 20:
+            debug_info.append(f"  ✗ Proxy failed: {r1['error'] or 'HTTP ' + str(r1['status'])}")
+            return False
+
+        letters1 = parse_codal_xml(r1["text"])
+        total_count = extract_total_count(r1["text"])
+        debug_info.append(f"  Parsed {len(letters1)} letters via proxy | TotalCount={total_count}")
+
+        if not letters1:
+            debug_info.append(f"  Proxy response preview: {r1['text'][:300]}")
+            return False
+
+        all_letters.extend(letters1)
+
+        if total_count > PER_PAGE:
+            total_pages = (total_count + PER_PAGE - 1) // PER_PAGE
+            for page in range(2, total_pages + 1):
+                url = codal_api_url(symbol, page=page, length=PER_PAGE)
+                fetch_url = f"{proxy_base}?url={quote(url)}"
+                r = _http_get(fetch_url, timeout * 2)
+                debug_info.append(f"→ Proxy Page {page}: HTTP {r['status']} | {r['latency_ms']}ms")
+                if r["ok"] and r["status"] == 200:
+                    page_letters = parse_codal_xml(r["text"])
+                    all_letters.extend(page_letters)
+                    debug_info.append(f"  +{len(page_letters)} letters")
+                    if len(page_letters) == 0:
+                        break
+                else:
+                    break
+                time.sleep(0.3)
+
+        method = "proxy"
+        return True
+
+    # Try direct first, then proxy
+    if try_direct():
         pass
+    elif try_proxy():
+        pass
+    else:
+        method = "failed"
 
-    # Try via proxy if configured
-    proxy_config = ProxyConfig.objects.filter(is_active=True).first()
-    if proxy_config:
-        try:
-            proxy_url = proxy_config.proxy_url.rstrip("/")
-            fetch_url = f"{proxy_url}?url={requests.utils.quote(url)}"
-            resp = requests.get(fetch_url, timeout=timeout)
-            if resp.status_code == 200 and len(resp.text) > 50:
-                letters = parse_codal_xml(resp.text)
-                reports = _filter_and_build(letters, symbol)
-                if reports:
-                    return {
-                        "reports": reports,
-                        "company_name": reports[0]["company_name"] if reports else symbol,
-                        "total_raw": len(letters),
-                        "method": "proxy",
-                    }
-        except requests.RequestException:
-            pass
+    return {
+        "letters": all_letters,
+        "total_available": len(all_letters),
+        "method": method,
+        "debug": debug_info,
+    }
 
-    return {"reports": [], "company_name": symbol, "total_raw": 0, "method": "failed"}
+
+def fetch_and_parse(symbol: str, timeout: int = 20) -> dict:
+    """Fetch ALL pages from codal.ir, parse, filter, and return final reports."""
+    result = fetch_all_pages(symbol, timeout)
+    letters = result["letters"]
+    reports = _filter_and_build(letters, symbol)
+
+    return {
+        "reports": reports,
+        "company_name": reports[0]["company_name"] if reports else symbol,
+        "total_raw": len(letters),
+        "method": result["method"],
+        "debug": result["debug"],
+    }
 
 
 def _filter_and_build(letters: List[dict], symbol: str) -> List[dict]:
@@ -185,7 +333,6 @@ def _filter_and_build(letters: List[dict], symbol: str) -> List[dict]:
 
 
 # ── Cache Helpers ──
-
 
 def get_cache(symbol: str) -> Optional[dict]:
     try:
