@@ -1,8 +1,10 @@
 import re
+import json
+from datetime import datetime
+from typing import List, Optional, Dict
 import requests
-import xml.etree.ElementTree as ET
 from django.conf import settings
-from crawler.models import CodalCache
+from crawler.models import CodalCache, ProxyConfig
 
 
 # ── XML Parser ──
@@ -16,7 +18,7 @@ def extract_tag(block: str, tag: str) -> str:
     return val.strip()
 
 
-def parse_codal_xml(xml_text: str) -> list[dict]:
+def parse_codal_xml(xml_text: str) -> List[dict]:
     """Parse Codal search API XML response → list of letter dicts."""
     results = []
     # Split by <Letter> blocks
@@ -141,7 +143,7 @@ def fetch_and_parse(symbol: str, timeout: int = 15) -> dict:
     return {"reports": [], "company_name": symbol, "total_raw": 0, "method": "failed"}
 
 
-def _filter_and_build(letters: list[dict], symbol: str) -> list[dict]:
+def _filter_and_build(letters: List[dict], symbol: str) -> List[dict]:
     norm_sym = normalize(symbol)
     matched = [
         l for l in letters
@@ -184,11 +186,8 @@ def _filter_and_build(letters: list[dict], symbol: str) -> list[dict]:
 
 # ── Cache Helpers ──
 
-import json
-from datetime import datetime
 
-
-def get_cache(symbol: str) -> dict | None:
+def get_cache(symbol: str) -> Optional[dict]:
     try:
         entry = CodalCache.objects.filter(symbol__iexact=symbol).first()
         if not entry:
@@ -207,7 +206,7 @@ def get_cache(symbol: str) -> dict | None:
         return None
 
 
-def set_cache(symbol: str, company_name: str, reports: list, total_raw: int, method: str):
+def set_cache(symbol: str, company_name: str, reports: list, total_raw: int, method: str) -> None:
     try:
         CodalCache.objects.update_or_create(
             symbol=symbol.lower(),
